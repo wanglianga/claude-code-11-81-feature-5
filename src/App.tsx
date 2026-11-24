@@ -10,6 +10,7 @@ import { ImpactPage } from './pages/ImpactPage';
 import { RecomputePage } from './pages/RecomputePage';
 import { ReleasePage } from './pages/ReleasePage';
 import { SyncPage } from './pages/SyncPage';
+import { DriftPage } from './pages/DriftPage';
 
 const NAV = [
   { key: 'import', label: '① 导入与语义核验' },
@@ -22,6 +23,7 @@ const NAV = [
   { key: 'recompute', label: '⑧ 重算比较' },
   { key: 'release', label: '⑨ 发布审阅' },
   { key: 'sync', label: '⑩ 离线失效与同步' },
+  { key: 'drift', label: '⑪ 发布后漂移验证' },
 ] as const;
 
 type NavKey = (typeof NAV)[number]['key'];
@@ -66,7 +68,7 @@ export default function App() {
         ))}
         <div className="foot">
           <div>网络：{online ? '在线（仍以本地台账为准）' : '离线模式'}</div>
-          <div style={{ marginTop: 6 }}>来源包：{state.records.length} · 快照：{state.snapshots.length}</div>
+          <div style={{ marginTop: 6 }}>来源包：{state.records.length} · 快照：{state.snapshots.length} · 漂移报告：{state.driftReports.length}</div>
         </div>
       </nav>
       <main className="main">
@@ -80,6 +82,7 @@ export default function App() {
         {tab === 'recompute' && <RecomputePage />}
         {tab === 'release' && <ReleasePage />}
         {tab === 'sync' && <SyncPage />}
+        {tab === 'drift' && <DriftPage />}
       </main>
       {toast && <div className="toast">{toast}</div>}
     </>

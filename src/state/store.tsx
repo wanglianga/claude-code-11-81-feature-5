@@ -31,6 +31,7 @@ import type {
   SemanticIssue,
   SyncState,
 } from '../domain/types';
+import type { DriftReport } from '../domain/driftTypes';
 import type { PipelineResult as PipelineResultType } from '../domain/pipeline';
 
 export type PipelineResult = PipelineResultType;
@@ -45,6 +46,12 @@ export interface PackageRecord {
   mode: RecomputeMode | null;
 }
 
+/** IndexedDB 内漂移报告的落库包装（存储主键为 id） */
+interface DriftReportRecord {
+  id: string;
+  report: DriftReport;
+}
+
 interface ServerState {
   releaseVersion: number;
   finalizedIds: string[];
@@ -55,6 +62,7 @@ interface AppState {
   records: PackageRecord[];
   snapshots: ReleaseSnapshot[];
   drafts: ReviewDraft[];
+  driftReports: DriftReport[];
   sync: SyncState | null;
   activeRule: string;
   lastFingerprints: RuleFingerprints | null;
@@ -72,6 +80,7 @@ type Action =
   | { type: 'upsertRecord'; payload: PackageRecord }
   | { type: 'upsertSnapshot'; payload: ReleaseSnapshot }
   | { type: 'upsertDraft'; payload: ReviewDraft }
+  | { type: 'upsertDriftReport'; payload: DriftReport }
   | { type: 'select'; payload: string | null }
   | { type: 'reviewer'; payload: string }
   | { type: 'notice'; payload: string | null }
@@ -84,6 +93,7 @@ const initialState: AppState = {
   records: [],
   snapshots: [],
   drafts: [],
+  driftReports: [],
   sync: null,
   activeRule: TOPOLOGY_RULE_VERSION,
   lastFingerprints: null,
@@ -112,6 +122,10 @@ function reducer(state: AppState, action: Action): AppState {
     case 'upsertDraft': {
       const others = state.drafts.filter((d) => d.draftId !== action.payload.draftId);
       return { ...state, drafts: [...others, action.payload] };
+    }
+    case 'upsertDriftReport': {
+      const others = state.driftReports.filter((r) => r.reportId !== action.payload.reportId);
+      return { ...state, driftReports: [...others, action.payload] };
     }
     case 'select':
       return { ...state, selectedId: action.payload };
@@ -148,6 +162,7 @@ interface AppApi {
   simulateRuleUpdate: () => Promise<void>;
   simulateServerAdvance: () => Promise<void>;
   runSync: () => Promise<void>;
+  runDriftValidation: (opts?: { alertThreshold?: number; observationDays?: number }) => Promise<DriftReport | null>;
   select: (id: string | null) => void;
   setReviewer: (name: string) => void;
   resetAll: () => Promise<void>;
@@ -167,10 +182,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     (async () => {
-      const [records, snapshots, drafts, activeRule, lastFingerprints, server, sync] = await Promise.all([
+      const [records, snapshots, drafts, driftReports, activeRule, lastFingerprints, server, sync] = await Promise.all([
         idbGetAll<PackageRecord>(STORES.packages),
         idbGetAll<ReleaseSnapshot>(STORES.snapshots),
         idbGetAll<ReviewDraft>(STORES.drafts),
+        idbGetAll<DriftReportRecord>(STORES.driftReports),
         kvGet<string>(KV_KEYS.rule),
         kvGet<RuleFingerprints>(KV_KEYS.fingerprints),
         kvGet<ServerState>(KV_KEYS.server),
@@ -182,6 +198,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           records: records.sort((a, b) => a.meta.importedAt.localeCompare(b.meta.importedAt)),
           snapshots,
           drafts,
+          driftReports: driftReports.map((r) => r.report),
           sync: sync ?? null,
           activeRule: activeRule ?? TOPOLOGY_RULE_VERSION,
           lastFingerprints: lastFingerprints ?? null,
@@ -357,7 +374,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'notice', payload: `模拟服务器发布版本前进至 v${server.releaseVersion}（终态发布：${server.finalizedIds.join('、') || '无'}）` });
     // 直接刷新内存中的 server 字段
     dispatch({ type: 'ready', payload: {
-      records: state.records, snapshots: state.snapshots, drafts: state.drafts, sync: state.sync,
+      records: state.records, snapshots: state.snapshots, drafts: state.drafts,
+      driftReports: state.driftReports, sync: state.sync,
       activeRule: state.activeRule, lastFingerprints: state.lastFingerprints, server,
     } });
   }, [state]);
@@ -377,6 +395,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [state]);
 
   const select = useCallback((id: string | null) => dispatch({ type: 'select', payload: id }), []);
+
+  const runDriftValidation = useCallback(
+    async (opts?: { alertThreshold?: number; observationDays?: number }): Promise<DriftReport | null> => {
+      dispatch({ type: 'busy', payload: { phase: '漂移验证：冻结母体抽样与配对', at: 20 } });
+      try {
+        const msg = await callWorker(
+          { type: 'runDriftValidation', payload: opts ?? {} },
+          (phase, at) => dispatch({ type: 'busy', payload: { phase, at } }),
+        );
+        if (msg.type !== 'driftDone') throw new Error('Worker 返回类型异常');
+        const report = msg.payload;
+        await idbPut<DriftReportRecord>(STORES.driftReports, { id: report.reportId, report });
+        dispatch({ type: 'upsertDriftReport', payload: report });
+        dispatch({
+          type: 'notice',
+          payload: report.comparison.routeB.expansionEligible
+            ? '漂移验证完成：分层加权路线通过三终点门禁，可扩面'
+            : '漂移验证完成：存在未通过门禁的路线，阻止扩面',
+        });
+        return report;
+      } catch (err) {
+        dispatch({ type: 'notice', payload: `漂移验证失败：${err instanceof Error ? err.message : String(err)}` });
+        return null;
+      } finally {
+        dispatch({ type: 'busy', payload: null });
+      }
+    },
+    [],
+  );
+
   const setReviewer = useCallback((name: string) => dispatch({ type: 'reviewer', payload: name }), []);
 
   const resetAll = useCallback(async () => {
@@ -387,8 +435,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const api = useMemo<AppApi>(
-    () => ({ state, importAndRun, compareModes, replay, saveDraft, simulateRuleUpdate, simulateServerAdvance, runSync, select, setReviewer, resetAll }),
-    [state, importAndRun, compareModes, replay, saveDraft, simulateRuleUpdate, simulateServerAdvance, runSync, select, setReviewer, resetAll],
+    () => ({ state, importAndRun, compareModes, replay, saveDraft, simulateRuleUpdate, simulateServerAdvance, runSync, runDriftValidation, select, setReviewer, resetAll }),
+    [state, importAndRun, compareModes, replay, saveDraft, simulateRuleUpdate, simulateServerAdvance, runSync, runDriftValidation, select, setReviewer, resetAll],
   );
 
   return <AppContext.Provider value={api}>{children}</AppContext.Provider>;

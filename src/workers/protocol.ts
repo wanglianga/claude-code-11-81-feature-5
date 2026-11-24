@@ -2,6 +2,7 @@
 import type { PipelineResult } from '../domain/pipeline';
 import type { RawSourcePackage } from '../domain/sampleData';
 import type { RecomputeMode, ReviewStatus, ReleaseSnapshot } from '../domain/types';
+import type { DriftReport } from '../domain/driftTypes';
 
 export interface WorkerRunRequest {
   type: 'runPipeline';
@@ -28,7 +29,13 @@ export interface WorkerCompareRequest {
   payload: Omit<WorkerRunRequest['payload'], 'recomputeMode'>;
 }
 
-export type WorkerRequest = WorkerRunRequest | WorkerReplayRequest | WorkerCompareRequest;
+/** 局部发布后的风险模型漂移验证（在 Worker 内完成统计，避免阻塞 UI） */
+export interface WorkerDriftRequest {
+  type: 'runDriftValidation';
+  payload: { alertThreshold?: number; observationDays?: number };
+}
+
+export type WorkerRequest = WorkerRunRequest | WorkerReplayRequest | WorkerCompareRequest | WorkerDriftRequest;
 
 export interface WorkerProgress {
   phase: string;
@@ -40,4 +47,5 @@ export type WorkerResponse =
   | { type: 'pipelineDone'; payload: PipelineResult }
   | { type: 'compareDone'; payload: { slice: PipelineResult; full: PipelineResult } }
   | { type: 'replayDone'; payload: { ok: boolean; replayHash: string; mismatch: string[] } }
+  | { type: 'driftDone'; payload: DriftReport }
   | { type: 'error'; payload: string };

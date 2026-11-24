@@ -1,12 +1,13 @@
 // IndexedDB 离线持久化封装：全部血缘台账在浏览器本地落库，断网可用。
 const DB_NAME = 'pipeline-lineage-workbench';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export const STORES = {
   packages: 'packages', // 导入账（含原始包文本）
   results: 'results', // 各包流水线结果
   snapshots: 'snapshots', // 发布快照
   drafts: 'drafts', // 审阅草案
+  driftReports: 'driftReports', // 漂移验证报告
   kv: 'kv', // 同步状态、规则指纹等杂项
 } as const;
 

@@ -2,6 +2,7 @@
 // 避免阻塞主线程 UI。领域代码不依赖 DOM，可直接在 Worker 内运行。
 import { runPipeline } from '../domain/pipeline';
 import { replaySnapshot } from '../domain/snapshot';
+import { runDriftValidation } from '../domain/drift';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 
 function post(msg: WorkerResponse): void {
@@ -52,6 +53,11 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         runPipeline({ ...common, recomputeMode: 'full' }),
       ]);
       post({ type: 'compareDone', payload: { slice, full } });
+    } else if (req.type === 'runDriftValidation') {
+      post({ type: 'progress', payload: { phase: '冻结母体抽样、预测-观测配对与校准', at: 40 } });
+      const report = await runDriftValidation(req.payload);
+      post({ type: 'progress', payload: { phase: '扩面门禁与两路线比较完成', at: 100 } });
+      post({ type: 'driftDone', payload: report });
     }
   } catch (err) {
     post({ type: 'error', payload: err instanceof Error ? err.message : String(err) });
